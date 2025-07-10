@@ -1,16 +1,6 @@
 /**
  * @file smart_ac_controller.ino
  * @brief ESP32 Smart AC Controller - IR Remote Learning, Sensor Monitoring, and MQTT Control
- *
- * This code allows an ES1P32-based system to learn IR signals from AC remotes,
- * store them in EEPROM, and control the AC based on temperature, humidity,
- * and power consumption. Supports MQTT for remote control and logging.
- *
- * Modules used:
- * - DHT21 (AM2301) for Temperature and Humidity
- * - SCT-013-020 for Current Sensing
- * - TSOP1738 (IR Receiver) and IR LED for IR Communication
- * - MQTT via Eclipse Mosquitto for cloud messaging
  */
 
 // ======================= Libraries ==========================
@@ -29,7 +19,7 @@ const char* SSID         = "RJ";
 const char* PASS         = "Shikareni";
 
 // MQTT Broker Configuration
-const char* MQTT_SERVER  = "172.28.1.8";
+const char* MQTT_SERVER  = "10.52.219.136";
 const int   MQTT_PORT    = 1883;
 const char* DEVICE_ID    = "ac1";
 
@@ -50,7 +40,7 @@ const char* DEVICE_ID    = "ac1";
 // Control Thresholds
 float TEMP_HIGH    = 27.0;
 float TEMP_LOW     = 23.0;
-float CURRENT_ZERO = 0.2; // in Amps
+float CURRENT_ZERO = 0.2;
 
 // ======================= Global Objects =====================
 WiFiClient espClient;
@@ -62,16 +52,18 @@ decode_results results;
 
 // Control Variables
 bool mode = true; // true: AUTO mode, false: LEARN mode
-unsigned long lastDebounceTime = 0;
-const unsigned long debounceDelay = 200;
-unsigned long lastMQTT = 0;
+
+// Debounce Variables
+const unsigned long debounceDelay = 50;
+static bool lastStableState = HIGH;
+static bool lastReadState = HIGH;
+static unsigned long lastDebounceTime = 0;
 
 // ================= Function Declarations =================
 void sendIRData(int addr);
 void saveIRData(int addr, volatile uint16_t* rawbuf, uint16_t len);
 void learnMode();
 void autoControlMode();
-//float readCurrent();
 
 // ======================= MQTT Handlers ======================
 void mqttCallback(char* topic, byte* payload, unsigned int len) {
@@ -79,7 +71,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
   for (unsigned int i = 0; i < len && i < sizeof(msg) - 1; i++) msg[i] = (char)payload[i];
   msg[len] = '\0';
 
-  Serial.println(msg); // [DEBUG] Print received MQTT message
+  Serial.println(msg);
   mqtt.publish("ac1/log", msg);
 
   if (strcmp(msg, "cool") == 0) sendIRData(COOL_ADDR);
@@ -91,7 +83,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
 void mqttReconnect() {
   while (!mqtt.connected()) {
-    //Serial.println("[DEBUG] Attempting MQTT connection..."); // [DEBUG]
     if (mqtt.connect(DEVICE_ID)) {
       mqtt.subscribe("ac1/cmd");
       char buf[64];
@@ -99,7 +90,6 @@ void mqttReconnect() {
       Serial.println(buf);
       mqtt.publish("ac1/log", buf);
     } else {
-      //Serial.println("[DEBUG] MQTT connection failed, retrying..."); // [DEBUG]
       delay(1000);
     }
   }
@@ -108,12 +98,12 @@ void mqttReconnect() {
 // ======================= Setup ==============================
 void setup() {
   Serial.begin(115200);
-  //Serial.println("[DEBUG] Serial started"); // [DEBUG]
 
   WiFi.begin(SSID, PASS);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
-    delay(250); Serial.print(".");
+    delay(250);
+    Serial.print(".");
   }
   Serial.println();
   Serial.print("WiFi up, IP: ");
@@ -136,36 +126,43 @@ void setup() {
 
 // ======================= Main Loop ==========================
 void loop() {
-   if (!mqtt.connected()) mqttReconnect();
- mqtt.loop();
+  // Maintain MQTT connection
+  if (!mqtt.connected()) mqttReconnect();
+  mqtt.loop();
 
-static bool lastButtonState = HIGH;
-static unsigned long lastDebounceTime = 0;
-bool currentState = digitalRead(BUTTON_PIN);
-
-if (currentState != lastButtonState) {
-  lastDebounceTime = millis();
-}
-if ((millis() - lastDebounceTime) > debounceDelay) {
-  if (lastButtonState == HIGH && currentState == LOW) {
-    mode = !mode;
-    char buf[64];
-    snprintf(buf, sizeof(buf), mode ? "Switched to AUTO CONTROL Mode" : "Switched to LEARNING Mode");
-    Serial.println(buf);
-    mqtt.publish("ac1/log", buf);
+  // === Improved Button Debounce Logic ===
+  bool reading = digitalRead(BUTTON_PIN);
+  if (reading != lastReadState) {
+    lastDebounceTime = millis();
   }
-}
-lastButtonState = currentState;
 
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != lastStableState) {
+      lastStableState = reading;
 
-  if (!mode) learnMode();
-  else autoControlMode();
+      if (lastStableState == HIGH) {
+        mode = !mode;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%s", mode ? "Switched to AUTO CONTROL Mode" : "Switched to LEARNING Mode");
+        Serial.println(buf);
+        mqtt.publish("ac1/log", buf);
+      }
+    }
+  }
+
+  lastReadState = reading;
+
+  // === Mode Handling ===
+  if (!mode)
+    learnMode();
+  else
+    autoControlMode();
 }
 
 // ======================= Learn Mode =========================
 void learnMode() {
   static int step = 0;
-
+ 
   if (irrecv.decode(&results)) {
     char buf[64];
     snprintf(buf, sizeof(buf), "Received IR signal %d. Saving...", step + 1);
@@ -173,11 +170,10 @@ void learnMode() {
     mqtt.publish("ac1/log", buf);
 
     uint16_t len = getCorrectedRawLength(&results);
-    //Serial.printf("[DEBUG] Raw length = %d\n", len); // [DEBUG]
-
     if      (step == 0) saveIRData(COOL_ADDR, results.rawbuf, len);
     else if (step == 1) saveIRData(FAN_ADDR,  results.rawbuf, len);
     else if (step == 2) saveIRData(OFF_ADDR,  results.rawbuf, len);
+
     if (++step >= 3) {
       snprintf(buf, sizeof(buf), "All signals saved. Switching to AUTO.");
       Serial.println(buf);
@@ -185,6 +181,7 @@ void learnMode() {
       mode = true;
       step = 0;
     }
+
     irrecv.resume();
   }
 }
@@ -197,12 +194,9 @@ void autoControlMode() {
 
   float temp = dht.readTemperature();
   float hum  = dht.readHumidity();
-  //float current = readCurrent();
-
- // Serial.printf("[DEBUG] Sensor Readings -> Temp: %.1f, Hum: %.1f, Curr: %.2f\n", temp, hum, current); // [DEBUG]
 
   char logbuf[128];
-  snprintf(logbuf, sizeof(logbuf), "Temp: %.1fC, Hum: %.1f%%, temp, hum" );
+  snprintf(logbuf, sizeof(logbuf), "Temp: %.1fC, Hum: %.1f%%", temp, hum);
   Serial.println(logbuf);
   mqtt.publish("ac1/log", logbuf);
 
@@ -215,8 +209,7 @@ void autoControlMode() {
     Serial.println(logbuf);
     mqtt.publish("ac1/log", logbuf);
     sendIRData(COOL_ADDR);
-  }
-  else if (temp <= TEMP_LOW ) {
+  } else if (temp <= TEMP_LOW) {
     snprintf(logbuf, sizeof(logbuf), "Sending FAN signal.");
     Serial.println(logbuf);
     mqtt.publish("ac1/log", logbuf);
@@ -226,7 +219,6 @@ void autoControlMode() {
 
 // ======================= EEPROM Handlers ====================
 void saveIRData(int addr, volatile uint16_t* rawbuf, uint16_t len) {
-  //Serial.printf("[DEBUG] Saving IR Data to EEPROM at %d, Length: %d\n", addr, len); // [DEBUG]
   EEPROM.write(addr,     len >> 8);
   EEPROM.write(addr + 1, len & 0xFF);
   for (int i = 0; i < len; i++) {
@@ -234,6 +226,7 @@ void saveIRData(int addr, volatile uint16_t* rawbuf, uint16_t len) {
     EEPROM.write(addr + 3 + i * 2, rawbuf[i] & 0xFF);
   }
   EEPROM.commit();
+
   char buf[64];
   snprintf(buf, sizeof(buf), "Saved %d values to EEPROM @%d", len, addr);
   Serial.println(buf);
@@ -242,23 +235,14 @@ void saveIRData(int addr, volatile uint16_t* rawbuf, uint16_t len) {
 
 void sendIRData(int addr) {
   uint16_t len = (EEPROM.read(addr) << 8) | EEPROM.read(addr + 1);
-  //Serial.printf("[DEBUG] Sending IR Data from EEPROM at %d, Length: %d\n", addr, len); // [DEBUG]
   uint16_t raw[len];
   for (int i = 0; i < len; i++) {
     raw[i] = (EEPROM.read(addr + 2 + i * 2) << 8) | EEPROM.read(addr + 3 + i * 2);
   }
   irsend.sendRaw(raw, len, 38);
+
   char buf[64];
   snprintf(buf, sizeof(buf), "Sent IR from EEPROM @%d", addr);
   Serial.println(buf);
   mqtt.publish("ac1/log", buf);
 }
-
-// ======================= Current Sensor =====================
-// float readCurrent() {
-//   int adc = analogRead(CURRENT_SENSOR_PIN);
-//   float v = adc * (3.3f / 4095.0f);
-//   float amps = (v / 1.0f) * 20.0f; For 20A/V sensor
-//   Serial.printf("[DEBUG] ADC: %d, Voltage: %.2f, Current: %.2f\n", adc, v, amps); [DEBUG]
-//   return amps;
-// }
