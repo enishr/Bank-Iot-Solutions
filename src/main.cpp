@@ -2,7 +2,7 @@
  * @file smart_ac_controller.ino
  * @brief ESP32 Smart AC Controller - IR Remote Learning, Sensor Monitoring, and MQTT Control
  *
- * This code allows an ESP32-based system to learn IR signals from AC remotes,
+ * This code allows an ES1P32-based system to learn IR signals from AC remotes,
  * store them in EEPROM, and control the AC based on temperature, humidity,
  * and power consumption. Supports MQTT for remote control and logging.
  *
