@@ -32,10 +32,11 @@ const char* DEVICE_ID    = "ac1";
 #define BUTTON_PIN          26
 
 // EEPROM Address Mapping
-#define EEPROM_SIZE         1200
+#define EEPROM_SIZE         120
 #define COOL_ADDR           0
-#define FAN_ADDR            400
-#define OFF_ADDR            800
+#define FAN_ADDR            10
+#define OFF_ADDR            20
+
 
 // Control Thresholds
 float TEMP_HIGH    = 29.0;
@@ -169,10 +170,11 @@ void learnMode() {
     Serial.println(buf);
     mqtt.publish("ac1/log", buf);
 
-    uint16_t len = getCorrectedRawLength(&results);
-    if      (step == 0) saveIRData(COOL_ADDR, results.rawbuf, len);
-    else if (step == 1) saveIRData(FAN_ADDR,  results.rawbuf, len);
-    else if (step == 2) saveIRData(OFF_ADDR,  results.rawbuf, len);
+  if (results.decode_type != decode_type_t::UNKNOWN) {
+  if      (step == 0) saveIRData(COOL_ADDR, results.value, results.bits);
+  else if (step == 1) saveIRData(FAN_ADDR,  results.value, results.bits);
+  else if (step == 2) saveIRData(OFF_ADDR,  results.value, results.bits);
+  }
 
     if (++step >= 3) {
       snprintf(buf, sizeof(buf), "All signals saved. Switching to AUTO.");
@@ -218,31 +220,29 @@ void autoControlMode() {
 }
 
 // ======================= EEPROM Handlers ====================
-void saveIRData(int addr, volatile uint16_t* rawbuf, uint16_t len) {
-  EEPROM.write(addr,     len >> 8);
-  EEPROM.write(addr + 1, len & 0xFF);
-  for (int i = 0; i < len; i++) {
-    EEPROM.write(addr + 2 + i * 2, rawbuf[i] >> 8);
-    EEPROM.write(addr + 3 + i * 2, rawbuf[i] & 0xFF);
-  }
+void saveIRData(int addr, uint32_t code, uint16_t bits) {
+  EEPROM.put(addr, code);        // 4 bytes
+  EEPROM.put(addr + 4, bits);    // 2 bytes
   EEPROM.commit();
 
   char buf[64];
-  snprintf(buf, sizeof(buf), "Saved %d values to EEPROM @%d", len, addr);
+  snprintf(buf, sizeof(buf), "Saved IR 0x%08X (%d bits) at %d", code, bits, addr);
   Serial.println(buf);
   mqtt.publish("ac1/log", buf);
 }
 
+
+
 void sendIRData(int addr) {
-  uint16_t len = (EEPROM.read(addr) << 8) | EEPROM.read(addr + 1);
-  uint16_t raw[len];
-  for (int i = 0; i < len; i++) {
-    raw[i] = (EEPROM.read(addr + 2 + i * 2) << 8) | EEPROM.read(addr + 3 + i * 2);
-  }
-  irsend.sendRaw(raw, len, 38);
+  uint32_t code;
+  uint16_t bits;
+  EEPROM.get(addr, code);
+  EEPROM.get(addr + 4, bits);
+
+  irsend.sendNEC(code, bits);  // Or change to sendSony/code-based if protocol differs
 
   char buf[64];
-  snprintf(buf, sizeof(buf), "Sent IR from EEPROM @%d", addr);
+  snprintf(buf, sizeof(buf), "Sent IR 0x%08X (%d bits) from EEPROM @%d", code, bits, addr);
   Serial.println(buf);
   mqtt.publish("ac1/log", buf);
 }
