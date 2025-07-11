@@ -26,10 +26,10 @@ const char* DEVICE_ID    = "ac1";
 // Pin Configuration
 #define DHTPIN              32
 #define DHTTYPE             DHT21
-#define IR_RECV_PIN         35
-#define IR_LED_PIN          4
-#define CURRENT_SENSOR_PIN  34
-#define BUTTON_PIN          18
+#define IR_RECV_PIN         33
+#define IR_LED_PIN          14
+//#define CURRENT_SENSOR_PIN  34
+#define BUTTON_PIN          26
 
 // EEPROM Address Mapping
 #define EEPROM_SIZE         1200
@@ -38,7 +38,7 @@ const char* DEVICE_ID    = "ac1";
 #define OFF_ADDR            800
 
 // Control Thresholds
-float TEMP_HIGH    = 27.0;
+float TEMP_HIGH    = 29.0;
 float TEMP_LOW     = 23.0;
 float CURRENT_ZERO = 0.2;
 
