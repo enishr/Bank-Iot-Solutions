@@ -19,29 +19,26 @@ const char* SSID         = "RJ";
 const char* PASS         = "Shikareni";
 
 // MQTT Broker Configuration
-const char* MQTT_SERVER  = "10.52.219.136";
+const char* MQTT_SERVER  = "10.208.24.136";
 const int   MQTT_PORT    = 1883;
 const char* DEVICE_ID    = "ac1";
 
 // Pin Configuration
-#define DHTPIN              32
-#define DHTTYPE             DHT21
-#define IR_RECV_PIN         33
-#define IR_LED_PIN          14
-//#define CURRENT_SENSOR_PIN  34
-#define BUTTON_PIN          26
+constexpr uint8_t DHTPIN           = 32;
+constexpr uint8_t DHTTYPE          = DHT21;
+constexpr uint8_t IR_RECV_PIN      = 33;
+constexpr uint8_t IR_LED_PIN       = 14;
+constexpr uint8_t BUTTON_PIN       = 26;
 
 // EEPROM Address Mapping
-#define EEPROM_SIZE         120
-#define COOL_ADDR           0
-#define FAN_ADDR            10
-#define OFF_ADDR            20
-
+constexpr int EEPROM_SIZE          = 120;
+constexpr int COOL_ADDR            = 0;
+constexpr int FAN_ADDR             = 10;
+constexpr int OFF_ADDR             = 20;
 
 // Control Thresholds
-float TEMP_HIGH    = 29.0;
-float TEMP_LOW     = 23.0;
-float CURRENT_ZERO = 0.2;
+constexpr float TEMP_HIGH          = 29.0;
+constexpr float TEMP_LOW           = 23.0;
 
 // ======================= Global Objects =====================
 WiFiClient espClient;
@@ -52,45 +49,73 @@ IRsend  irsend(IR_LED_PIN);
 decode_results results;
 
 // Control Variables
-bool mode = true; // true: AUTO mode, false: LEARN mode
+bool mode = true;  // true = Auto, false = Learn
 
 // Debounce Variables
 const unsigned long debounceDelay = 50;
-static bool lastStableState = HIGH;
-static bool lastReadState = HIGH;
-static unsigned long lastDebounceTime = 0;
+bool lastStableState = HIGH;
+bool lastReadState   = HIGH;
+unsigned long lastDebounceTime = 0;
 
-// ================= Function Declarations =================
+// Learning Mode Steps
+enum IRStep {
+  STEP_COOL = 0,
+  STEP_FAN  = 1,
+  STEP_OFF  = 2
+};
+
+// =================== Function Prototypes ====================
 void sendIRData(int addr);
-void saveIRData(int addr, volatile uint16_t* rawbuf, uint16_t len);
+void saveIRData(int addr, uint32_t code, uint16_t bits);
 void learnMode();
 void autoControlMode();
 
 // ======================= MQTT Handlers ======================
 void mqttCallback(char* topic, byte* payload, unsigned int len) {
   char msg[128];
-  for (unsigned int i = 0; i < len && i < sizeof(msg) - 1; i++) msg[i] = (char)payload[i];
+  for (unsigned int i = 0; i < len && i < sizeof(msg) - 1; i++) {
+    msg[i] = (char)payload[i];
+  }
   msg[len] = '\0';
 
+  // Debug: Print incoming topic and message
+  Serial.print("[DEBUG] MQTT Topic: ");
+  Serial.println(topic);
+  Serial.print("[DEBUG] MQTT Payload: ");
   Serial.println(msg);
+
   mqtt.publish("ac1/log", msg);
 
-  if (strcmp(msg, "cool") == 0) sendIRData(COOL_ADDR);
-  else if (strcmp(msg, "fan") == 0) sendIRData(FAN_ADDR);
-  else if (strcmp(msg, "off") == 0) sendIRData(OFF_ADDR);
-  else if (strcmp(msg, "auto") == 0) mode = true;
-  else if (strcmp(msg, "learn") == 0) mode = false;
+  if (strcmp(msg, "cool") == 0) {
+    mqtt.publish("ac1/log", "[DEBUG] Received COOL command.");
+    sendIRData(COOL_ADDR);
+  } else if (strcmp(msg, "fan") == 0) {
+    mqtt.publish("ac1/log", "[DEBUG] Received FAN command.");
+    sendIRData(FAN_ADDR);
+  } else if (strcmp(msg, "off") == 0) {
+    mqtt.publish("ac1/log", "[DEBUG] Received OFF command.");
+    sendIRData(OFF_ADDR);
+  } else if (strcmp(msg, "auto") == 0) {
+    mode = true;
+    mqtt.publish("ac1/log", "[DEBUG] Switched to AUTO MODE from MQTT.");
+  } else if (strcmp(msg, "learn") == 0) {
+    mode = false;
+    mqtt.publish("ac1/log", "[DEBUG] Switched to LEARN MODE from MQTT.");
+  } else {
+    mqtt.publish("ac1/log", "[DEBUG] Unknown MQTT command received.");
+  }
 }
 
 void mqttReconnect() {
   while (!mqtt.connected()) {
+    Serial.println("[DEBUG] Attempting MQTT connection...");
     if (mqtt.connect(DEVICE_ID)) {
       mqtt.subscribe("ac1/cmd");
-      char buf[64];
-      snprintf(buf, sizeof(buf), "MQTT connected and subscribed.");
-      Serial.println(buf);
-      mqtt.publish("ac1/log", buf);
+      mqtt.publish("ac1/log", "[DEBUG] MQTT connected and subscribed to ac1/cmd.");
+      Serial.println("[DEBUG] MQTT connected and subscribed to ac1/cmd.");
     } else {
+      Serial.print("[DEBUG] Failed MQTT connection. State: ");
+      Serial.println(mqtt.state());
       delay(1000);
     }
   }
@@ -107,7 +132,7 @@ void setup() {
     Serial.print(".");
   }
   Serial.println();
-  Serial.print("WiFi up, IP: ");
+  Serial.print("WiFi connected. IP: ");
   Serial.println(WiFi.localIP());
 
   mqtt.setServer(MQTT_SERVER, MQTT_PORT);
@@ -119,76 +144,67 @@ void setup() {
   dht.begin();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
-  char buf[64];
-  snprintf(buf, sizeof(buf), "System Initialized. Press button to enter Learning Mode.");
-  Serial.println(buf);
-  mqtt.publish("ac1/log", buf);
+  mqtt.publish("ac1/log", "[DEBUG] System Initialized. Press button to switch mode.");
+  Serial.println("[DEBUG] System Initialized. Press button to switch mode.");
 }
 
-// ======================= Main Loop ==========================
+// ======================= Loop ===============================
 void loop() {
-  // Maintain MQTT connection
   if (!mqtt.connected()) mqttReconnect();
   mqtt.loop();
 
-  // === Improved Button Debounce Logic ===
+  // Debounce button
   bool reading = digitalRead(BUTTON_PIN);
-  if (reading != lastReadState) {
-    lastDebounceTime = millis();
-  }
-
+  if (reading != lastReadState) lastDebounceTime = millis();
   if ((millis() - lastDebounceTime) > debounceDelay) {
     if (reading != lastStableState) {
       lastStableState = reading;
-
       if (lastStableState == HIGH) {
         mode = !mode;
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%s", mode ? "Switched to AUTO CONTROL Mode" : "Switched to LEARNING Mode");
-        Serial.println(buf);
-        mqtt.publish("ac1/log", buf);
+        const char* msg = mode ? "Switched to AUTO CONTROL Mode" : "Switched to LEARNING Mode";
+        Serial.println(msg);
+        mqtt.publish("ac1/log", msg);
       }
     }
   }
-
   lastReadState = reading;
 
-  // === Mode Handling ===
-  if (!mode)
-    learnMode();
-  else
+  if (mode)
     autoControlMode();
+  else
+    learnMode();
 }
 
 // ======================= Learn Mode =========================
 void learnMode() {
-  static int step = 0;
- 
+  static IRStep step = STEP_COOL;
+
   if (irrecv.decode(&results)) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "Received IR signal %d. Saving...", step + 1);
+    snprintf(buf, sizeof(buf), "[DEBUG] Received IR %d. Saving...", step + 1);
     Serial.println(buf);
     mqtt.publish("ac1/log", buf);
 
-  if (results.decode_type != decode_type_t::UNKNOWN) {
-  if      (step == 0) saveIRData(COOL_ADDR, results.value, results.bits);
-  else if (step == 1) saveIRData(FAN_ADDR,  results.value, results.bits);
-  else if (step == 2) saveIRData(OFF_ADDR,  results.value, results.bits);
-  }
+    if (results.decode_type != decode_type_t::UNKNOWN) {
+      switch (step) {
+        case STEP_COOL: saveIRData(COOL_ADDR, results.value, results.bits); break;
+        case STEP_FAN:  saveIRData(FAN_ADDR,  results.value, results.bits); break;
+        case STEP_OFF:  saveIRData(OFF_ADDR,  results.value, results.bits); break;
+      }
 
-    if (++step >= 3) {
-      snprintf(buf, sizeof(buf), "All signals saved. Switching to AUTO.");
-      Serial.println(buf);
-      mqtt.publish("ac1/log", buf);
-      mode = true;
-      step = 0;
+      step = static_cast<IRStep>(step + 1);
+      if (step > STEP_OFF) {
+        mqtt.publish("ac1/log", "[DEBUG] All signals saved. Switching to AUTO.");
+        step = STEP_COOL;
+        mode = true;
+      }
     }
 
     irrecv.resume();
   }
 }
 
-// ======================= Auto Control Mode ==================
+// =================== Auto Control Mode ======================
 void autoControlMode() {
   static unsigned long lastUpdate = 0;
   if (millis() - lastUpdate < 5000) return;
@@ -198,40 +214,34 @@ void autoControlMode() {
   float hum  = dht.readHumidity();
 
   char logbuf[128];
-  snprintf(logbuf, sizeof(logbuf), "Temp: %.1fC, Hum: %.1f%%", temp, hum);
+  snprintf(logbuf, sizeof(logbuf), "[DEBUG] Temp: %.1fC, Hum: %.1f%%", temp, hum);
   Serial.println(logbuf);
   mqtt.publish("ac1/log", logbuf);
 
-  char msg[128];
-  snprintf(msg, sizeof(msg), "{\"temp\":%.1f,\"hum\":%.1f}", temp, hum);
-  mqtt.publish("ac1/status", msg);
+  char jsonbuf[128];
+  snprintf(jsonbuf, sizeof(jsonbuf), "{\"temp\":%.1f,\"hum\":%.1f}", temp, hum);
+  mqtt.publish("ac1/status", jsonbuf);
 
-  if      (temp >= TEMP_HIGH) {
-    snprintf(logbuf, sizeof(logbuf), "Sending COOL signal.");
-    Serial.println(logbuf);
-    mqtt.publish("ac1/log", logbuf);
+  if (temp >= TEMP_HIGH) {
+    mqtt.publish("ac1/log", "[DEBUG] Temp high. Sending COOL signal.");
     sendIRData(COOL_ADDR);
   } else if (temp <= TEMP_LOW) {
-    snprintf(logbuf, sizeof(logbuf), "Sending FAN signal.");
-    Serial.println(logbuf);
-    mqtt.publish("ac1/log", logbuf);
+    mqtt.publish("ac1/log", "[DEBUG] Temp low. Sending FAN signal.");
     sendIRData(FAN_ADDR);
   }
 }
 
-// ======================= EEPROM Handlers ====================
+// ======================= EEPROM I/O =========================
 void saveIRData(int addr, uint32_t code, uint16_t bits) {
-  EEPROM.put(addr, code);        // 4 bytes
-  EEPROM.put(addr + 4, bits);    // 2 bytes
+  EEPROM.put(addr, code);         // 4 bytes
+  EEPROM.put(addr + 4, bits);     // 2 bytes
   EEPROM.commit();
 
   char buf[64];
-  snprintf(buf, sizeof(buf), "Saved IR 0x%08X (%d bits) at %d", code, bits, addr);
+  snprintf(buf, sizeof(buf), "[DEBUG] Saved IR 0x%08X (%d bits) at %d", code, bits, addr);
   Serial.println(buf);
   mqtt.publish("ac1/log", buf);
 }
-
-
 
 void sendIRData(int addr) {
   uint32_t code;
@@ -239,10 +249,10 @@ void sendIRData(int addr) {
   EEPROM.get(addr, code);
   EEPROM.get(addr + 4, bits);
 
-  irsend.sendNEC(code, bits);  // Or change to sendSony/code-based if protocol differs
+  irsend.sendNEC(code, bits);  // Use correct protocol here if not NEC
 
   char buf[64];
-  snprintf(buf, sizeof(buf), "Sent IR 0x%08X (%d bits) from EEPROM @%d", code, bits, addr);
+  snprintf(buf, sizeof(buf), "[DEBUG] Sent IR 0x%08X (%d bits) from EEPROM @%d", code, bits, addr);
   Serial.println(buf);
   mqtt.publish("ac1/log", buf);
 }
