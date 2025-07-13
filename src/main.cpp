@@ -32,12 +32,12 @@ constexpr uint8_t BUTTON_PIN       = 26;
 
 // EEPROM Address Mapping
 constexpr int EEPROM_SIZE          = 120;
-constexpr int COOL_ADDR            = 0;
-constexpr int FAN_ADDR             = 10;
-constexpr int OFF_ADDR             = 20;
+constexpr int ON_ADDR            = 0;
+constexpr int OFF_ADDR             = 10;
+constexpr int SET_ADDR             = 20;
 
 // Control Thresholds
-constexpr float TEMP_HIGH          = 29.0;
+constexpr float TEMP_HIGH          = 35.0;
 constexpr float TEMP_LOW           = 23.0;
 
 // ======================= Global Objects =====================
@@ -59,9 +59,9 @@ unsigned long lastDebounceTime = 0;
 
 // Learning Mode Steps
 enum IRStep {
-  STEP_COOL = 0,
-  STEP_FAN  = 1,
-  STEP_OFF  = 2
+  STEP_ON = 0,
+  STEP_OFF  = 1,
+  STEP_SET  = 2
 };
 
 // =================== Function Prototypes ====================
@@ -86,15 +86,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
   mqtt.publish("ac1/log", msg);
 
-  if (strcmp(msg, "cool") == 0) {
-    mqtt.publish("ac1/log", "[DEBUG] Received COOL command.");
-    sendIRData(COOL_ADDR);
-  } else if (strcmp(msg, "fan") == 0) {
-    mqtt.publish("ac1/log", "[DEBUG] Received FAN command.");
-    sendIRData(FAN_ADDR);
+  if (strcmp(msg, "on") == 0) {
+    mqtt.publish("ac1/log", "[DEBUG] Received ON command.");
+    sendIRData(ON_ADDR);
   } else if (strcmp(msg, "off") == 0) {
     mqtt.publish("ac1/log", "[DEBUG] Received OFF command.");
     sendIRData(OFF_ADDR);
+  } else if (strcmp(msg, "set") == 0) {
+    mqtt.publish("ac1/log", "[DEBUG] Received SET command.");
+    sendIRData(SET_ADDR);
   } else if (strcmp(msg, "auto") == 0) {
     mode = true;
     mqtt.publish("ac1/log", "[DEBUG] Switched to AUTO MODE from MQTT.");
@@ -177,7 +177,7 @@ void loop() {
 
 // ======================= Learn Mode =========================
 void learnMode() {
-  static IRStep step = STEP_COOL;
+  static IRStep step = STEP_ON;
 
   if (irrecv.decode(&results)) {
     char buf[64];
@@ -187,15 +187,15 @@ void learnMode() {
 
     if (results.decode_type != decode_type_t::UNKNOWN) {
       switch (step) {
-        case STEP_COOL: saveIRData(COOL_ADDR, results.value, results.bits); break;
-        case STEP_FAN:  saveIRData(FAN_ADDR,  results.value, results.bits); break;
+        case STEP_ON: saveIRData(ON_ADDR, results.value, results.bits); break;
         case STEP_OFF:  saveIRData(OFF_ADDR,  results.value, results.bits); break;
+        case STEP_SET:  saveIRData(SET_ADDR,  results.value, results.bits); break;
       }
 
       step = static_cast<IRStep>(step + 1);
-      if (step > STEP_OFF) {
+      if (step > STEP_SET) {
         mqtt.publish("ac1/log", "[DEBUG] All signals saved. Switching to AUTO.");
-        step = STEP_COOL;
+        step = STEP_ON;
         mode = true;
       }
     }
@@ -223,11 +223,11 @@ void autoControlMode() {
   mqtt.publish("ac1/status", jsonbuf);
 
   if (temp >= TEMP_HIGH) {
-    mqtt.publish("ac1/log", "[DEBUG] Temp high. Sending COOL signal.");
-    sendIRData(COOL_ADDR);
+    mqtt.publish("ac1/log", "[DEBUG] Temp high. Sending ON signal.");
+    sendIRData(ON_ADDR);
   } else if (temp <= TEMP_LOW) {
-    mqtt.publish("ac1/log", "[DEBUG] Temp low. Sending FAN signal.");
-    sendIRData(FAN_ADDR);
+    mqtt.publish("ac1/log", "[DEBUG] Temp low. Sending OFF signal.");
+    sendIRData(OFF_ADDR);
   }
 }
 
@@ -248,7 +248,10 @@ void sendIRData(int addr) {
   uint16_t bits;
   EEPROM.get(addr, code);
   EEPROM.get(addr + 4, bits);
-
+    Serial.print("Transmitting IR Code: 0x");
+    Serial.println(code, HEX);
+    Serial.print("Bit Length: ");
+    Serial.println(bits);
   irsend.sendNEC(code, bits);  // Use correct protocol here if not NEC
 
   char buf[64];
