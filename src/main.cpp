@@ -19,7 +19,7 @@ const char* SSID         = "RJ";
 const char* PASS         = "Shikareni";
 
 // MQTT Broker Configuration
-const char* MQTT_SERVER  = "10.208.24.136";
+const char* MQTT_SERVER  = "test.mosquitto.org";
 const int   MQTT_PORT    = 1883;
 const char* DEVICE_ID    = "ac1";
 
@@ -121,7 +121,7 @@ void mqttReconnect() {
   }
 }
 
-// ======================= Setup ==============================
+  // ======================= Setup ==============================
 void setup() {
   Serial.begin(115200);
 
@@ -213,10 +213,10 @@ void autoControlMode() {
   float temp = dht.readTemperature();
   float hum  = dht.readHumidity();
 
-  char logbuf[128];
-  snprintf(logbuf, sizeof(logbuf), "[DEBUG] Temp: %.1fC, Hum: %.1f%%", temp, hum);
-  Serial.println(logbuf);
-  mqtt.publish("ac1/log", logbuf);
+  // char logbuf[128];
+  // snprintf(logbuf, sizeof(logbuf), "[DEBUG] Temp: %.1fC, Hum: %.1f%%", temp, hum);
+  // Serial.println(logbuf);
+  // mqtt.publish("ac1/log", logbuf);
 
   char jsonbuf[128];
   snprintf(jsonbuf, sizeof(jsonbuf), "{\"temp\":%.1f,\"hum\":%.1f}", temp, hum);
@@ -248,10 +248,10 @@ void sendIRData(int addr) {
   uint16_t bits;
   EEPROM.get(addr, code);
   EEPROM.get(addr + 4, bits);
-    Serial.print("Transmitting IR Code: 0x");
-    Serial.println(code, HEX);
-    Serial.print("Bit Length: ");
-    Serial.println(bits);
+    // Serial.print("Transmitting IR Code: 0x");
+    // Serial.println(code, HEX);
+    // Serial.print("Bit Length: ");
+    // Serial.println(bits);
   irsend.sendNEC(code, bits);  // Use correct protocol here if not NEC
 
   char buf[64];
